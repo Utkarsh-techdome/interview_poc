@@ -1,0 +1,8 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+deepgram-sdk>=3.5.0
+python-multipart>=0.0.9
+websockets>=12.0
+
+# Optional — only needed for CLI mode (no server microphone needed for FastAPI mode)
+# pyaudio>=0.2.14

@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Interview Agent</title>
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --border: #2a2d3a;
+            --accent: #6366f1;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #f59e0b;
+            --text: #e2e8f0;
+            --muted: #64748b;
+            --radius: 12px;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', system-ui, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 28px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        header .logo {
+            font-size: 22px;
+        }
+
+        header h1 {
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        header .pill {
+            margin-left: auto;
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 99px;
+            background: var(--border);
+            color: var(--muted);
+        }
+
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            overflow: hidden;
+            height: calc(100vh - 57px);
+        }
+
+        aside {
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .panel {
+            padding: 18px 18px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel h2 {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .1em;
+            color: var(--muted);
+            margin-bottom: 12px;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 3px;
+        }
+
+        input,
+        textarea {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 13px;
+            padding: 7px 10px;
+            margin-bottom: 10px;
+            outline: none;
+            transition: border-color .15s;
+            font-family: inherit;
+        }
+
+        input:focus,
+        textarea:focus {
+            border-color: var(--accent);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+            line-height: 1.6;
+        }
+
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 9px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: opacity .15s, transform .1s;
+            width: 100%;
+        }
+
+        .btn:active {
+            transform: scale(.97);
+        }
+
+        .btn:disabled {
+            opacity: .4;
+            cursor: default;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-danger {
+            background: var(--red);
+            color: #fff;
+        }
+
+        .btn-ghost {
+            background: var(--border);
+            color: var(--text);
+        }
+
+        .btn+.btn {
+            margin-top: 7px;
+        }
+
+        /* Status */
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 99px;
+            background: var(--border);
+            color: var(--muted);
+        }
+
+        .badge.active {
+            background: #16301a;
+            color: var(--green);
+        }
+
+        .badge.ended {
+            background: #2a1515;
+            color: var(--red);
+        }
+
+        .badge.busy {
+            background: #2a2410;
+            color: var(--yellow);
+        }
+
+        .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .dot.pulse {
+            animation: pulse 1.2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1
+            }
+
+            50% {
+                opacity: .3
+            }
+        }
+
+        /* Questions list */
+        #q-list {
+            list-style: none;
+        }
+
+        #q-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--muted);
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        #q-list li.done {
+            color: var(--green);
+            text-decoration: line-through;
+        }
+
+        #q-list li .num {
+            font-weight: 700;
+            min-width: 18px;
+            margin-top: 1px;
+        }
+
+        /* Chat */
+        .chat-area {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 14px 22px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .chat-header h2 {
+            font-size: 14px;
+            font-weight: 600;
+            flex: 1;
+        }
+
+        #transcript {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            scroll-behavior: smooth;
+        }
+
+        .msg {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            max-width: 78%;
+            animation: fadeUp .2s;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(5px)
+            }
+
+            to {
+                opacity: 1;
+                transform: none
+            }
+        }
+
+        .msg.agent {
+            align-self: flex-start;
+        }
+
+        .msg.user {
+            align-self: flex-end;
+        }
+
+        .bubble {
+            padding: 11px 15px;
+            border-radius: 14px;
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        .msg.agent .bubble {
+            background: #1e2235;
+            border-bottom-left-radius: 3px;
+        }
+
+        .msg.user .bubble {
+            background: #1a2535;
+            color: #a5c8ff;
+            border-bottom-right-radius: 3px;
+        }
+
+        .meta {
+            font-size: 11px;
+            color: var(--muted);
+            padding: 0 3px;
+        }
+
+        .msg.user .meta {
+            text-align: right;
+        }
+
+        /* Visualiser */
+        #viz {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+            height: 38px;
+            padding: 0 22px;
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+        }
+
+        .vbar {
+            width: 3px;
+            border-radius: 99px;
+            background: var(--accent);
+            transition: height .06s;
+        }
+
+        /* Empty state */
+        .empty {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            color: var(--muted);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .empty .icon {
+            font-size: 38px;
+        }
+
+        /* Debug log */
+        #debug-box {
+            display: none;
+            font-size: 11px;
+            font-family: monospace;
+            background: #0a0c14;
+            color: #4ade80;
+            padding: 8px 12px;
+            max-height: 100px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border);
+        }
+
+        /* Toast */
+        #toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 10px 16px;
+            border-radius: 10px;
+            font-size: 13px;
+            box-shadow: 0 8px 30px #0008;
+            transform: translateY(70px);
+            opacity: 0;
+            transition: all .2s;
+            z-index: 999;
+        }
+
+        #toast.show {
+            transform: none;
+            opacity: 1;
+        }
+
+        #toast.err {
+            border-color: var(--red);
+            color: var(--red);
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <span class="logo">🎙</span>
+        <h1>AI Interview Agent</h1>
+        <span class="pill" id="session-pill">No active session</span>
+    </header>
+
+    <main>
+        <aside>
+            <!-- Setup -->
+            <div class="panel" id="setup-panel">
+                <h2>Interview Setup</h2>
+                <label>Candidate Name</label>
+                <input id="inp-name" value="Alex" />
+                <label>Role</label>
+                <input id="inp-role" value="Software Engineer" />
+                <label>Questions (one per line)</label>
+                <textarea id="inp-q">Can you start by telling me a little about yourself and your background?
+What programming languages or technologies are you most comfortable with, and why?
+Describe a challenging technical problem you solved recently. What was your approach?
+How do you handle working under pressure or tight deadlines?
+Where do you see yourself professionally in the next three to five years?
+Do you have any questions for us about the role or the team?</textarea>
+                <button class="btn btn-primary" id="btn-start" onclick="startInterview()">🚀 Start Interview</button>
+            </div>
+
+            <!-- Status -->
+            <div class="panel">
+                <h2>Status</h2>
+                <div class="status-row">
+                    <span class="badge" id="badge"><span class="dot"></span> Idle</span>
+                    <span id="timer" style="font-size:12px;color:var(--muted)">00:00</span>
+                </div>
+                <div id="indicator" style="font-size:12px;color:var(--muted);min-height:18px;margin-bottom:10px;"></div>
+                <button class="btn btn-danger" id="btn-end" onclick="endInterview()" disabled>⏹ End Interview</button>
+                <button class="btn btn-ghost" id="btn-dl" onclick="downloadReport()" disabled>📄 Download
+                    Report</button>
+            </div>
+
+            <!-- Questions tracker -->
+            <div class="panel" style="flex:1">
+                <h2>Questions</h2>
+                <ul id="q-list">
+                    <li style="color:var(--muted);font-size:12px">Start an interview to see questions.</li>
+                </ul>
+            </div>
+        </aside>
+
+        <div class="chat-area">
+            <div class="chat-header">
+                <h2>Live Transcript</h2>
+                <label
+                    style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px;cursor:pointer;margin:0">
+                    <input type="checkbox" id="chk-debug" onchange="toggleDebug()" style="width:auto;margin:0"> debug
+                </label>
+            </div>
+            <div id="transcript">
+                <div class="empty">
+                    <div class="icon">🎤</div>
+                    <div>Configure the interview and click <strong>Start</strong></div>
+                    <div>Your browser microphone will be used in real time</div>
+                </div>
+            </div>
+            <div id="debug-box"></div>
+            <div id="viz"><!-- bars injected --></div>
+        </div>
+    </main>
+
+    <div id="toast"></div>
+
+    <script>
+        // ─── Constants ────────────────────────────────────────────────────────────────
+        const TARGET_RATE = 16000;  // Must match agent.py SAMPLE_RATE
+        const VIZ_N = 22;
+
+        // ─── State ────────────────────────────────────────────────────────────────────
+        let sessionId = null;
+        let ws = null;
+        let audioCtx = null;  // for mic capture
+        let mediaStream = null;
+        let workletNode = null;
+        let analyser = null;
+        let agentACtx = null;  // for agent playback
+        let agentNextTime = 0;    // scheduling cursor for seamless playback
+        let timerIv = null;
+        let startTs = null;
+        let allQuestions = [];
+        let questionsDone = new Set();
+        // Mic gating: while the agent is speaking we stop sending mic audio
+        // so Deepgram doesn't transcribe the agent's TTS as candidate speech.
+        let micMuted = false;
+
+        // ─── Visualiser ───────────────────────────────────────────────────────────────
+        const $viz = document.getElementById('viz');
+        for (let i = 0; i < VIZ_N; i++) {
+            const b = document.createElement('div');
+            b.className = 'vbar'; b.style.height = '4px'; $viz.appendChild(b);
+        }
+        const vbars = [...$viz.querySelectorAll('.vbar')];
+        let vizRaf = null;
+        function startViz() {
+            function tick() {
+                if (!analyser) return;
+                const d = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(d);
+                const step = Math.floor(d.length / VIZ_N);
+                vbars.forEach((b, i) => b.style.height = `${4 + (d[i * step] || 0) / 5}px`);
+                vizRaf = requestAnimationFrame(tick);
+            }
+            tick();
+        }
+        function stopViz() {
+            if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+            vbars.forEach(b => b.style.height = '4px');
+        }
+
+        // ─── Debug ────────────────────────────────────────────────────────────────────
+        const $dbg = document.getElementById('debug-box');
+        function dbg(msg) {
+            const line = document.createElement('div');
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            $dbg.appendChild(line);
+            $dbg.scrollTop = $dbg.scrollHeight;
+        }
+        function toggleDebug() {
+            $dbg.style.display = document.getElementById('chk-debug').checked ? 'block' : 'none';
+        }
+
+        // ─── Toast ────────────────────────────────────────────────────────────────────
+        function toast(msg, isErr = false) {
+            const t = document.getElementById('toast');
+            t.textContent = msg; t.className = 'show' + (isErr ? ' err' : '');
+            clearTimeout(t._t); t._t = setTimeout(() => t.className = '', 3500);
+        }
+
+        // ─── Badge ────────────────────────────────────────────────────────────────────
+        function setBadge(label, cls = '') {
+            const b = document.getElementById('badge');
+            b.className = 'badge ' + cls;
+            b.innerHTML = `<span class="dot ${cls === 'active' ? 'pulse' : ''}"></span> ${label}`;
+        }
+        function setIndicator(text) {
+            document.getElementById('indicator').textContent = text;
+        }
+
+        // ─── Timer ────────────────────────────────────────────────────────────────────
+        function startTimer() {
+            startTs = Date.now();
+            timerIv = setInterval(() => {
+                const s = Math.floor((Date.now() - startTs) / 1000);
+                document.getElementById('timer').textContent =
+                    `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+            }, 1000);
+        }
+        function stopTimer() { clearInterval(timerIv); }
+
+        // ─── Questions ────────────────────────────────────────────────────────────────
+        function renderQuestions(qs) {
+            allQuestions = qs; questionsDone.clear();
+            const ul = document.getElementById('q-list');
+            ul.innerHTML = '';
+            qs.forEach((q, i) => {
+                const li = document.createElement('li');
+                li.id = `qi-${i}`;
+                li.innerHTML = `<span class="num">Q${i + 1}</span><span>${q}</span>`;
+                ul.appendChild(li);
+            });
+        }
+        function detectDone(text) {
+            allQuestions.forEach((q, i) => {
+                if (questionsDone.has(i)) return;
+                const kw = q.toLowerCase().split(' ').slice(0, 6).join(' ');
+                if (text.toLowerCase().includes(kw)) {
+                    document.getElementById(`qi-${i}`)?.classList.add('done');
+                    questionsDone.add(i);
+                }
+            });
+        }
+
+        // ─── Transcript ───────────────────────────────────────────────────────────────
+        const $tx = document.getElementById('transcript');
+        function clearTranscript() { $tx.innerHTML = ''; }
+        function addMsg(role, text) {
+            const div = document.createElement('div');
+            div.className = `msg ${role}`;
+            const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const who = role === 'agent' ? '🤖 Interviewer' : '🧑 You';
+            div.innerHTML = `<div class="meta">${who} · ${now}</div><div class="bubble">${esc(text)}</div>`;
+            $tx.appendChild(div);
+            $tx.scrollTop = $tx.scrollHeight;
+            if (role === 'agent') detectDone(text);
+        }
+        function esc(t) { return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+        // ─── Agent audio playback ─────────────────────────────────────────────────────
+        // Chunks are scheduled back-to-back using AudioContext.currentTime for
+        // gapless, glitch-free playback of streaming PCM.
+
+        function ensureAgentCtx() {
+            if (!agentACtx) {
+                agentACtx = new AudioContext({ sampleRate: TARGET_RATE });
+                agentNextTime = 0;
+            }
+            // Resume on first user gesture
+            if (agentACtx.state === 'suspended') agentACtx.resume();
+        }
+
+        function playPCMChunk(arrayBuffer) {
+            ensureAgentCtx();
+            const int16 = new Int16Array(arrayBuffer);
+            const float32 = new Float32Array(int16.length);
+            for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+
+            const buf = agentACtx.createBuffer(1, float32.length, TARGET_RATE);
+            buf.copyToChannel(float32, 0);
+
+            const src = agentACtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(agentACtx.destination);
+
+            // Schedule immediately after the previous chunk (seamless)
+            const startAt = Math.max(agentACtx.currentTime, agentNextTime);
+            src.start(startAt);
+            agentNextTime = startAt + buf.duration;
+        }
+
+        // ─── Microphone capture (AudioWorklet + manual resampling to 16 kHz) ──────────
+        //
+        // Strategy:
+        //   1. Open AudioContext at the browser's NATIVE sample rate (e.g. 44100 / 48000).
+        //   2. Use an AudioWorklet to receive raw Float32 frames from the mic.
+        //   3. Resample down to 16000 Hz with a simple linear interpolation.
+        //   4. Convert to Int16 PCM and send over WebSocket.
+        //
+        // This avoids the ScriptProcessor deprecation and ensures Deepgram always
+        // receives exactly 16 kHz mono PCM regardless of the host machine's audio hw.
+
+        const WORKLET_CODE = `
+class MicCapture extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch && ch.length) this.port.postMessage(ch.buffer, [ch.buffer]);
+    return true;
+  }
+}
+registerProcessor('mic-capture', MicCapture);
+`;
+
+        async function startMic() {
+            // Get raw mic audio — echo cancellation / noise suppression are
+            // designed for human-to-human calls.  For an AI voice agent they
+            // aggressively suppress the user's voice (the browser sees the
+            // agent's TTS through speakers as "echo" and removes everything).
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    echoCancellation: false,   // ← was true; kills user voice after agent speaks
+                    noiseSuppression: false,   // ← raw audio; let Deepgram's VAD decide
+                    autoGainControl: false,    // ← we apply gain manually below
+                }
+            });
+
+            const nativeRate = mediaStream.getAudioTracks()[0].getSettings().sampleRate
+                || 44100;
+            dbg(`Mic native sample rate: ${nativeRate} Hz`);
+
+            // Build AudioContext at native rate so we capture at full quality
+            audioCtx = new AudioContext({ sampleRate: nativeRate });
+            const source = audioCtx.createMediaStreamSource(mediaStream);
+
+            // Analyser for visualiser
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+
+            // Load AudioWorklet
+            const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+            const blobURL = URL.createObjectURL(blob);
+            await audioCtx.audioWorklet.addModule(blobURL);
+            URL.revokeObjectURL(blobURL);
+
+            // GainNode — 4× boost so Deepgram VAD reliably detects speech.
+            // Without echo-cancellation the raw signal may still be quiet on
+            // laptop mics; 4.0 is safe for normal speech levels.
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = 4.0;
+            source.connect(gainNode);
+
+            workletNode = new AudioWorkletNode(audioCtx, 'mic-capture');
+            gainNode.connect(workletNode);
+
+            // Resample ratio
+            const ratio = nativeRate / TARGET_RATE;
+            let inputBuffer  = new Float32Array(0);   // pre-resample accumulator
+            let outputBuffer = new Int16Array(0);     // post-resample accumulator
+            // Send chunks of at least this many samples to Deepgram.
+            // Deepgram VAD needs ≥ ~20 ms; 3200 samples = 200ms at 16 kHz.
+            // (Official DG examples use 8000-byte / 250ms chunks.)
+            const MIN_SEND_SAMPLES = 3200;  // 200 ms @ 16 kHz
+
+            workletNode.port.onmessage = (evt) => {
+                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+                // Append incoming frames to accumulator
+                const chunk = new Float32Array(evt.data);
+                const combined = new Float32Array(inputBuffer.length + chunk.length);
+                combined.set(inputBuffer);
+                combined.set(chunk, inputBuffer.length);
+
+                // How many 16 kHz output samples can we produce?
+                const outLen = Math.floor(combined.length / ratio);
+                if (outLen === 0) { inputBuffer = combined; return; }
+
+                // Linear interpolation resample
+                const resampled = new Float32Array(outLen);
+                for (let i = 0; i < outLen; i++) {
+                    const srcPos = i * ratio;
+                    const lo = Math.floor(srcPos);
+                    const hi = Math.min(lo + 1, combined.length - 1);
+                    const t = srcPos - lo;
+                    resampled[i] = combined[lo] * (1 - t) + combined[hi] * t;
+                }
+
+                // Save leftover input frames for next call
+                const consumed = Math.floor(outLen * ratio);
+                inputBuffer = combined.slice(consumed);
+
+                // Convert Float32 → Int16 PCM and append to output accumulator
+                const newInt16 = new Int16Array(resampled.length);
+                for (let i = 0; i < resampled.length; i++) {
+                    newInt16[i] = Math.max(-32768, Math.min(32767, resampled[i] * 32768));
+                }
+                const merged = new Int16Array(outputBuffer.length + newInt16.length);
+                merged.set(outputBuffer);
+                merged.set(newInt16, outputBuffer.length);
+                outputBuffer = merged;
+
+                // Only send when mic is NOT muted (i.e. agent is not speaking)
+                if (!micMuted && outputBuffer.length >= MIN_SEND_SAMPLES) {
+                    ws.send(outputBuffer.buffer);
+                    dbg(`→ WS: ${outputBuffer.byteLength} B`);
+                    outputBuffer = new Int16Array(0);
+                }
+            };
+
+            startViz();
+            dbg('Mic started, streaming to server');
+        }
+
+        function stopMic() {
+            if (workletNode) { workletNode.disconnect(); workletNode = null; }
+            if (analyser) { analyser.disconnect(); analyser = null; }
+            if (audioCtx) { audioCtx.close(); audioCtx = null; }
+            if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+            stopViz();
+            dbg('Mic stopped');
+        }
+
+        // ─── WebSocket ────────────────────────────────────────────────────────────────
+        function connectWS(sid) {
+            const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+            ws = new WebSocket(`${proto}://${location.host}/ws/${sid}`);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                dbg('WebSocket open');
+                toast('Connected — interview is live!');
+                setBadge('Live', 'active');
+                startTimer();
+            };
+
+            ws.onmessage = (evt) => {
+                if (evt.data instanceof ArrayBuffer) {
+                    // Binary = agent PCM audio → play it
+                    playPCMChunk(evt.data);
+                    return;
+                }
+                const msg = JSON.parse(evt.data);
+                // Control signals for mic gating
+                if (msg.ctrl === 'agent_speaking') {
+                    micMuted = true;
+                    dbg('🔇 Mic muted (agent speaking)');
+                    return;
+                }
+                if (msg.ctrl === 'agent_done') {
+                    // 300 ms grace so residual speaker audio dies before we
+                    // re-open the mic and Deepgram's VAD could pick it up.
+                    setTimeout(() => {
+                        micMuted = false;
+                        dbg('🎤 Mic unmuted (agent done)');
+                    }, 300);
+                    return;
+                }
+                dbg(`← ${msg.type}`);
+                handleEvent(msg);
+            };
+
+            ws.onerror = (e) => { dbg('WS error'); toast('WebSocket error', true); };
+
+            ws.onclose = () => {
+                dbg('WS closed');
+                setBadge('Ended', 'ended');
+                setIndicator('');
+                stopTimer(); stopMic();
+                document.getElementById('btn-end').disabled = true;
+                document.getElementById('btn-dl').disabled = false;
+                toast('Interview session ended');
+            };
+        }
+
+        function handleEvent(msg) {
+            switch (msg.type) {
+                case 'settings_applied':
+                    clearTranscript(); setBadge('Live', 'active');
+                    break;
+                case 'user_started_speaking':
+                    setIndicator('🎤 Candidate speaking…');
+                    break;
+                case 'agent_thinking':
+                    setIndicator('💭 Interviewer thinking…'); setBadge('Thinking…', 'busy');
+                    break;
+                case 'agent_started_speaking':
+                    setIndicator('🔊 Interviewer speaking…'); setBadge('Live', 'active');
+                    agentNextTime = 0;  // reset scheduling cursor for new utterance
+                    break;
+                case 'agent_audio_done':
+                    setIndicator(''); break;
+                case 'conversation_text':
+                    addMsg(msg.role, msg.text); break;
+                case 'interview_complete':
+                    toast('🎉 Interview complete! Report is ready.');
+                    setBadge('Ended', 'ended'); setIndicator('');
+                    stopTimer(); stopMic();
+                    document.getElementById('btn-end').disabled = true;
+                    document.getElementById('btn-dl').disabled = false;
+                    break;
+                case 'error':
+                    toast('Error: ' + msg.message, true); break;
+            }
+        }
+
+        // ─── Actions ──────────────────────────────────────────────────────────────────
+        async function startInterview() {
+            const name = document.getElementById('inp-name').value.trim() || 'Candidate';
+            const role = document.getElementById('inp-role').value.trim() || 'Software Engineer';
+            const qs = document.getElementById('inp-q').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+            if (!qs.length) { toast('Add at least one question', true); return; }
+
+            const $btn = document.getElementById('btn-start');
+            $btn.disabled = true; $btn.textContent = '⏳ Starting…';
+
+            try {
+                // 1. Create session
+                const res = await fetch('/sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ role, candidate_name: name, questions: qs }),
+                });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                sessionId = data.session_id;
+
+                document.getElementById('session-pill').textContent = `${name} · ${role}`;
+                renderQuestions(qs);
+
+                // 2. Start mic (triggers permission prompt)
+                await startMic();
+
+                // 3. Open WebSocket
+                connectWS(sessionId);
+
+                document.getElementById('btn-end').disabled = false;
+                setBadge('Connecting…');
+            } catch (e) {
+                toast('Failed to start: ' + e.message, true);
+                dbg('Error: ' + e.message);
+                $btn.disabled = false; $btn.textContent = '🚀 Start Interview';
+            }
+        }
+
+        async function endInterview() {
+            if (!ws) return;
+            ws.send(JSON.stringify({ action: 'end' }));
+            stopMic();
+            document.getElementById('btn-end').disabled = true;
+            toast('Ending interview…');
+        }
+
+        function downloadReport() {
+            if (!sessionId) return;
+            window.open(`/sessions/${sessionId}/report`, '_blank');
+        }
+    </script>
+</body>
+
+</html>
