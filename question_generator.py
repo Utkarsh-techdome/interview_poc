@@ -30,104 +30,15 @@ from typing import Any
 
 import ollama
 
+from prompts import GENERATION_PROMPT, QUESTION_COUNTS
+from utils import safe_json_parse, format_skills, format_experience
+from constants import GENERATION_MODEL
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Config
+# Public API
 # ---------------------------------------------------------------------------
-
-GENERATION_MODEL = "minimax-m2.7:cloud"   # same model as resume_screening
-
-# How many questions to generate per type bucket.
-# Total target: 5-7 questions (interviewer adds greeting + closing automatically).
-QUESTION_COUNTS = {
-    "behavioural": 2,   # Background, pressure, goals
-    "technical": 3,     # Anchored to resume skills/projects
-    "motivational": 1,  # Culture fit, why this role
-}
-
-# ---------------------------------------------------------------------------
-# Prompt
-# ---------------------------------------------------------------------------
-
-GENERATION_PROMPT = """\
-You are an expert technical interviewer designing a structured interview question bank.
-
-## Context
-
-Role: {role}
-Candidate name: {candidate_name}
-
-Candidate's skills (from resume):
-{candidate_skills}
-
-Candidate's experience (from resume):
-{candidate_experience}
-
-Job description required skills:
-{jd_skills}
-
-Skill gaps (in JD but not in resume):
-{skill_gaps}
-
-## Your task
-
-Generate exactly {total_questions} interview questions in the JSON format below.
-
-Distribution:
-- {behavioural_count} behavioural questions (background, pressure handling, collaboration)
-- {technical_count} technical questions (MUST be anchored to specific skills or projects from the candidate's resume — use their actual experience as the jumping-off point, not generic questions)
-- {motivational_count} motivational question (career goals, why this role)
-
-Rules:
-1. Technical questions MUST reference something specific from the candidate's resume (a project, a tool, a technology they listed). Never ask "describe a project" generically — ask about THEIR project.
-2. Skill gaps: if a JD skill is missing from the resume, include ONE probing question about it (fits within technical count).
-3. follow_up_seeds: 2 probing follow-ups per question. These must explore a DIFFERENT dimension than the main question. Good dimensions: scale/metrics, challenges faced, architectural decisions, team dynamics, what they'd do differently.
-4. depth_gate: set requires_concrete_example=true for all technical questions. Set requires_metric=true only if the question is about impact or scale.
-5. question_type: "behavioural" | "technical" | "motivational"
-6. Keep question text conversational, as if spoken aloud. No bullet points inside questions.
-
-## Output format
-
-Return ONLY valid JSON, no markdown fences, no preamble:
-
-{{
-  "questions": [
-    {{
-      "id": "q1",
-      "question_type": "behavioural",
-      "text": "...",
-      "anchor": "why this question was chosen (1 sentence)",
-      "follow_up_seeds": ["...", "..."],
-      "depth_gate": {{
-        "requires_concrete_example": true,
-        "requires_metric": false
-      }}
-    }}
-  ]
-}}"""
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _format_skills(skills: list[str]) -> str:
-    if not skills:
-        return "None listed"
-    return ", ".join(skills)
-
-
-def _format_experience(experience: list[dict]) -> str:
-    if not experience:
-        return "No experience listed"
-    lines = []
-    for e in experience:
-        role = e.get("role", "Unknown role")
-        desc = e.get("description", "")
-        years = e.get("years", 0)
-        lines.append(f"- {role} ({years}y): {desc}")
-    return "\n".join(lines)
 
 
 def _compute_skill_gaps(
@@ -283,10 +194,10 @@ async def generate_question_bank(
     prompt = GENERATION_PROMPT.format(
         role=role,
         candidate_name=candidate_name,
-        candidate_skills=_format_skills(candidate_skills),
-        candidate_experience=_format_experience(candidate_experience),
-        jd_skills=_format_skills(jd_skills),
-        skill_gaps=_format_skills(skill_gaps) if skill_gaps else "None — strong skill match",
+        candidate_skills=format_skills(candidate_skills),
+        candidate_experience=format_experience(candidate_experience),
+        jd_skills=format_skills(jd_skills),
+        skill_gaps=format_skills(skill_gaps) if skill_gaps else "None — strong skill match",
         total_questions=total_questions,
         behavioural_count=QUESTION_COUNTS["behavioural"],
         technical_count=QUESTION_COUNTS["technical"],

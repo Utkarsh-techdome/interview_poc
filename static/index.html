@@ -461,9 +461,9 @@
 
                 <div id="setup-manual" style="display:none">
                     <label>Candidate Name</label>
-                    <input id="inp-name" value="Alex" />
+                    <input id="inp-name" value="" placeholder="Candidate Name" />
                     <label>Role</label>
-                    <input id="inp-role" value="Software Engineer" />
+                    <input id="inp-role" value="" placeholder="e.g. Software Engineer" />
                     <label>Questions (one per line)</label>
                     <textarea id="inp-q">Can you start by telling me a little about yourself and your background?
 What programming languages or technologies are you most comfortable with, and why?
@@ -864,12 +864,16 @@ registerProcessor('mic-capture', MicCapture);
                     return;
                 }
                 if (msg.ctrl === 'agent_done') {
-                    // 1000 ms grace so residual speaker audio (echo) dies down completely
-                    // before we re-open the mic for candidate input.
+                    // Calculate remaining playback time from the AudioContext timeline
+                    const now = (agentACtx && agentACtx.currentTime) || 0;
+                    const remaining = Math.max(0, agentNextTime - now);
+                    const delayMs = (remaining * 1000) + 800; // remaining time + 800ms grace
+                    
+                    dbg(`⏳ Agent audio finisher in ${Math.round(delayMs)}ms`);
                     setTimeout(() => {
                         micMuted = false;
-                        dbg('🎤 Mic unmuted (agent done)');
-                    }, 1000);
+                        dbg('🎤 Mic unmuted (playback complete)');
+                    }, delayMs);
                     return;
                 }
                 dbg(`← ${msg.type}`);
@@ -954,8 +958,12 @@ registerProcessor('mic-capture', MicCapture);
                 // (Note: we need candidate_name and role; let's extract them from JD/Resume or ask user)
                 // For now, we'll use "Candidate" and "Software Engineer" as defaults
                 // if not already provided.
-                const role = document.getElementById('inp-role').value || "Candidate";
-                const name = document.getElementById('inp-name').value || "Software Engineer";
+                const name = screeningData.candidate_name || document.getElementById('inp-name').value || "Candidate";
+                const role = screeningData.role || document.getElementById('inp-role').value || "Software Engineer";
+
+                // Update inputs with extracted data if they were empty
+                if (!document.getElementById('inp-name').value) document.getElementById('inp-name').value = name;
+                if (!document.getElementById('inp-role').value) document.getElementById('inp-role').value = role;
 
                 const genRes = await fetch('/generate-questions', {
                     method: 'POST',
