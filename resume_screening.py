@@ -451,4 +451,10 @@ async def evaluate_candidate(
     decision = "interview" if scores["fit_score"] >= threshold else "reject"
     logger.info(f"fit_score={scores['fit_score']}, decision={decision}")
 
-    return {**scores, "decision": decision}
+    return {
+        **scores,
+        "decision": decision,
+        "candidate_skills": resume_struct["skills"],
+        "candidate_experience": resume_struct["experience"],
+        "jd_skills": jd_struct["skills"],
+    }

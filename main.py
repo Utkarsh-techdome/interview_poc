@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dotenv import load_dotenv
+load_dotenv()
 import datetime
 import json
 import logging
@@ -55,6 +57,7 @@ from pydantic import BaseModel, Field
 from agent import InterviewSession, build_system_prompt, DEFAULT_CONFIG, SAMPLE_RATE, CHANNELS, SAMPLE_WIDTH
 from resume_screening import evaluate_candidate, DEFAULT_THRESHOLD
 
+from question_generator import generate_question_bank
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -86,12 +89,35 @@ SESSIONS: dict[str, InterviewSession] = {}
 # ---------------------------------------------------------------------------
 
 class InterviewConfig(BaseModel):
-    role: str = Field(default="Software Engineer", description="Job role being interviewed for")
-    candidate_name: str = Field(default="Candidate", description="Candidate's name")
-    questions: list[str] = Field(
-        default=DEFAULT_CONFIG["questions"],
-        description="Ordered list of interview questions",
-    )
+    role: str = Field(default="Software Engineer")
+    candidate_name: str = Field(default="Candidate")
+ 
+    # Legacy flat list — still accepted for backward compat.
+    # Ignored when question_bank is provided.
+    questions: list[str] = Field(default=[])
+ 
+    # Structured question bank from generate_question_bank().
+    # Each item: {id, question_type, text, anchor, follow_up_seeds, depth_gate}
+    question_bank: list[dict] = Field(default=[])
+ 
+    # Resume-derived fields (from /evaluate-candidate response)
+    candidate_skills: list[str] = Field(default=[])
+    candidate_experience: list[dict] = Field(default=[])
+    jd_skills: list[str] = Field(default=[])
+
+class GenerateQuestionsRequest(BaseModel):
+    role: str = Field(..., description="Job role being interviewed for")
+    candidate_name: str = Field(..., description="Candidate's name")
+    candidate_skills: list[str] = Field(default=[], description="Skills extracted from resume")
+    candidate_experience: list[dict] = Field(default=[], description="Experience extracted from resume")
+    jd_skills: list[str] = Field(default=[], description="Skills required by job description")
+ 
+ 
+class GenerateQuestionsResponse(BaseModel):
+    role: str
+    candidate_name: str
+    question_count: int
+    question_bank: list[dict] 
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -129,6 +155,11 @@ class CandidateEvalResponse(BaseModel):
                              description="0.35*exp_sim + 0.40*exp_str + 0.25*skill_cov")
     decision: str = Field(..., description="'interview' if fit_score >= threshold, else 'reject'")
     threshold: float
+
+    # Extracted data for question generation
+    candidate_skills: list[str] = Field(default_factory=list)
+    candidate_experience: list[dict] = Field(default_factory=list)
+    jd_skills: list[str] = Field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -215,6 +246,53 @@ async def evaluate_candidate_endpoint(
         fit_score=result["fit_score"],
         decision=result["decision"],
         threshold=threshold,
+        candidate_skills=result.get("candidate_skills", []),
+        candidate_experience=result.get("candidate_experience", []),
+        jd_skills=result.get("jd_skills", []),
+    )
+
+@app.post(
+    "/generate-questions",
+    response_model=GenerateQuestionsResponse,
+    summary="Generate a personalised question bank for a candidate",
+    tags=["Interview"],
+)
+async def generate_questions_endpoint(req: GenerateQuestionsRequest):
+    """
+    Generate a resume-anchored, role-aware question bank.
+ 
+    **Typical flow:**
+    1. POST /evaluate-candidate  → get candidate_skills, candidate_experience
+    2. POST /generate-questions  → get question_bank   ← THIS ENDPOINT
+    3. POST /sessions            → pass question_bank in the body
+ 
+    The question_bank returned here should be passed verbatim as the
+    `question_bank` field when creating a session.
+ 
+    **Requirements:**
+    - Ollama must be running with the extraction model available.
+    """
+    try:
+        bank = await generate_question_bank(
+            role=req.role,
+            candidate_name=req.candidate_name,
+            candidate_skills=req.candidate_skills,
+            candidate_experience=req.candidate_experience,
+            jd_skills=req.jd_skills,
+        )
+    except Exception as exc:
+        # Never block session creation — fall back gracefully
+        logger.error(f"Question generation error: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Question generation failed: {exc}. Use /sessions with a manual questions list as fallback.",
+        )
+ 
+    return GenerateQuestionsResponse(
+        role=req.role,
+        candidate_name=req.candidate_name,
+        question_count=len(bank),
+        question_bank=bank,
     )
 
 
@@ -226,8 +304,13 @@ async def evaluate_candidate_endpoint(
 )
 async def create_session(cfg: InterviewConfig):
     """
-    Create a new interview session with the given configuration.
-    Returns a session_id used for all subsequent calls.
+    Create a new interview session.
+ 
+    **Recommended:** pass `question_bank` (from /generate-questions) rather
+    than the legacy `questions` list. When `question_bank` is present,
+    `questions` is ignored.
+ 
+    If neither is provided, a generic fallback question set is used.
     """
     api_key = os.getenv("DEEPGRAM_API_KEY")
     if not api_key:
@@ -235,19 +318,27 @@ async def create_session(cfg: InterviewConfig):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="DEEPGRAM_API_KEY is not configured on the server",
         )
-
+ 
+    # Ensure at least a fallback question list exists
+    cfg_dict = cfg.model_dump()
+    if not cfg_dict.get("question_bank") and not cfg_dict.get("questions"):
+        from agent import DEFAULT_CONFIG
+        cfg_dict["questions"] = DEFAULT_CONFIG["questions"]
+ 
     session_id = str(uuid.uuid4())
-    session = InterviewSession(
-        session_id=session_id,
-        cfg=cfg.model_dump(),
-    )
+    session = InterviewSession(session_id=session_id, cfg=cfg_dict)
     SESSIONS[session_id] = session
-
+ 
+    question_count = (
+        len(cfg_dict["question_bank"]) if cfg_dict.get("question_bank")
+        else len(cfg_dict.get("questions", []))
+    )
+ 
     return SessionResponse(
         session_id=session_id,
         role=cfg.role,
         candidate_name=cfg.candidate_name,
-        question_count=len(cfg.questions),
+        question_count=question_count,
         status=session.status,
         created_at=session.created_at.isoformat(),
     )

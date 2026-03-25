@@ -9,5 +9,6 @@ pdfplumber>=0.11.0       # PDF text extraction
 ollama>=0.2.0            # llama3.2:3b (extraction) + nomic-embed-text (embeddings)
 numpy>=1.26.0            # cosine similarity
 
+python-dotenv>=1.0.1
 # Optional -- only needed for CLI mode (no server microphone needed for FastAPI mode)
 # pyaudio>=0.2.14

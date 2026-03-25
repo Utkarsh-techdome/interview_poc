@@ -50,14 +50,20 @@ CHUNK_FRAMES = 4096    # larger buffer = more stable streaming
 DEFAULT_CONFIG: dict = {
     "role": "Software Engineer",
     "candidate_name": "Candidate",
+    # Legacy flat list — only used if no question_bank is provided.
+    # When question_bank is present, this is ignored.
     "questions": [
         "Can you start by telling me a little about yourself and your background?",
         "What programming languages or technologies are you most comfortable with, and why?",
         "Describe a challenging technical problem you solved recently. What was your approach?",
         "How do you handle working under pressure or tight deadlines?",
         "Where do you see yourself professionally in the next three to five years?",
-        "Do you have any questions for us about the role or the team?",
     ],
+    # New structured fields — populated by question_generator.py
+    "question_bank": [],          # list[dict] from generate_question_bank()
+    "candidate_skills": [],       # list[str] from resume_screening
+    "candidate_experience": [],   # list[dict] from resume_screening
+    "jd_skills": [],              # list[str] from resume_screening
 }
 
 FAREWELL_PHRASES = [
@@ -74,55 +80,170 @@ FAREWELL_PHRASES = [
 # ---------------------------------------------------------------------------
 
 def build_system_prompt(cfg: dict) -> str:
-    questions_block = "\n".join(f"  Q{i+1}: {q}" for i, q in enumerate(cfg["questions"]))
+    """
+    Build the interviewer system prompt.
+ 
+    Two modes:
+      - Structured mode: cfg["question_bank"] is a list of question dicts
+        (produced by question_generator.py). Renders rich per-question
+        instructions including follow-up seeds and depth gates.
+      - Legacy mode: cfg["question_bank"] is empty. Falls back to the old
+        flat questions list. Keeps backward compatibility.
+    """
+    bank: list[dict] = cfg.get("question_bank", [])
+ 
+    if bank:
+        questions_block = _render_question_bank(bank)
+        personalization_block = _render_personalization(cfg)
+    else:
+        # Legacy fallback — flat question list
+        questions_block = "\n".join(
+            f"  Q{i+1}: {q}" for i, q in enumerate(cfg.get("questions", []))
+        )
+        personalization_block = ""
+ 
     return (
         f"You are a professional, friendly, and rigorous interviewer conducting a job interview "
         f"for the role of {cfg['role']}.\n"
         f"The candidate's name is {cfg['candidate_name']}.\n\n"
-        "CORE RULES:\n"
-        "1. STAY IN ROLE: ONLY trigger the hiring team response if the candidate "
-"explicitly asks about company culture, salary, team structure, or role specifics. "
-"If the candidate gives a short social response like 'thank you' or 'glad to be here', "
-"simply acknowledge briefly and re-ask the pending question. "
-"NEVER trigger the hiring team response for social pleasantries.\n\n"
-        "2. NO GENERIC PRAISE: Do not use filler affirmations like \"That's great!\", \"Impressive!\", "
-        "or \"Fantastic!\". Instead, briefly reflect back what was said in ONE sentence that shows you "
-        "processed the answer, then proceed.\n\n"
-        "--- INTERVIEW FLOW CONTROL ---\n\n"
-        "## Topic Management\n"
-        "- Cover all questions in the list, one at a time.\n"
-        "- Track `topics_covered` and `current_topic_followup_count` mentally.\n"
-        "- For non-technical questions (background, career goals, pressure handling): 0-1 follow-ups.\n"
-        "- For technical questions (system design, problem solving, tools): ALWAYS ask 1 follow-up, max 2.\n"
-        "- Never ask for the same dimension (e.g., metrics, tools, challenges) twice within the same topic.\n\n"
-        "## Metrics Fishing Rule\n"
-        "- If the candidate has already provided a quantitative result, mark `metrics_collected = True` for that topic.\n"
-        "- Do NOT ask for metrics again once collected for that topic.\n\n"
-        "## Handling Struggling Candidates\n"
-        "- Only trigger 'No worries' if the candidate explicitly says they don't know, "
-        "goes silent after being asked twice, or gives two consecutive answers that are "
-        "clearly off-topic or incoherent.\n"
-        "- Do NOT treat short or fragmented speech as struggling — candidates often pause "
-        "mid-thought. Wait for a complete response before evaluating.\n"
-        "- A response split across multiple short utterances is still ONE response.\n\n"
-        "## Time Awareness\n"
-        "- Target 10-14 total exchanges before wrapping up.\n"
-        "- Always end with \"Do you have any questions for us?\" before closing.\n\n"
-        "## Depth vs Breadth Balance\n"
-        "- Ask all questions first, with mandatory follow-ups on technical ones.\n"
-        "- A good interview covers all topics with at least 1 follow-up on each technical answer.\n"
-        "- Max 2 follow-ups per topic. Never repeat a dimension already answered.\n"
-        "------------------------------\n\n"
-        "## Closing Rule\n"
-        "- Once you have asked 'Do you have any questions for us?' and the candidate "
-        "has responded (even with 'no'), the interview is OVER.\n"
-        "- Do NOT ask any more questions after this point.\n"
-        "- Close with: 'That concludes our interview. Best of luck with the next steps, Alex.'\n"
-        "- Never loop back to previous questions after the closing question.\n\n"
-        "Interview questions to cover (ask one at a time):\n"
-        f"{questions_block}\n\n"
-        "Important: Keep responses conversational but concise. Follow the Flow Control rules strictly."
+        + personalization_block
+        + _core_rules()
+        + _flow_control(bank)
+        + "## Questions to cover\n\n"
+        + questions_block
+        + "\n\n"
+        "Important: Keep responses conversational and concise. "
+        "Follow the Flow Control rules strictly. "
+        "Never read out the anchor or depth_gate fields to the candidate — "
+        "these are your private instructions."
     )
+
+
+def _render_personalization(cfg: dict) -> str:
+    """Inject resume context so the agent sounds like it read the CV."""
+    skills = cfg.get("candidate_skills", [])
+    experience = cfg.get("candidate_experience", [])
+    if not skills and not experience:
+        return ""
+ 
+    skill_str = ", ".join(skills[:8]) if skills else "not specified"
+    exp_lines = []
+    for e in experience[:3]:   # top 3 roles only — prompt economy
+        role = e.get("role", "")
+        desc = e.get("description", "")
+        if role or desc:
+            exp_lines.append(f"  - {role}: {desc}")
+    exp_str = "\n".join(exp_lines) if exp_lines else "  Not specified"
+ 
+    return (
+        "## Candidate background (from their resume — use this to personalise your responses)\n\n"
+        f"Skills: {skill_str}\n\n"
+        f"Experience:\n{exp_str}\n\n"
+        "When acknowledging an answer, briefly reflect it back using the candidate's "
+        "actual words or technologies — never use generic phrases like 'interesting' "
+        "or 'great experience'.\n\n"
+    )
+ 
+ 
+def _render_question_bank(bank: list[dict]) -> str:
+    """
+    Render the structured question bank into prompt text.
+ 
+    Each question gets:
+      - The spoken question text
+      - The question type (governs follow-up rules)
+      - Follow-up seeds (the interviewer's private menu of probes)
+      - Depth gate conditions (must be met before advancing)
+    """
+    lines = []
+    for q in bank:
+        qid = q.get("id", "?")
+        qtype = q.get("question_type", "behavioural")
+        text = q.get("text", "")
+        seeds = q.get("follow_up_seeds", [])
+        gate = q.get("depth_gate", {})
+ 
+        requires_example = gate.get("requires_concrete_example", False)
+        requires_metric = gate.get("requires_metric", False)
+ 
+        # Depth gate instruction
+        gate_parts = []
+        if requires_example:
+            gate_parts.append("candidate must give a concrete example before you move on")
+        if requires_metric:
+            gate_parts.append("ask for a quantitative outcome if not volunteered")
+        gate_str = "; ".join(gate_parts) if gate_parts else "no hard gate — use judgment"
+ 
+        # Follow-up seeds
+        seed_lines = "\n".join(f"       - {s}" for s in seeds) if seeds else "       (none)"
+ 
+        # Type-specific follow-up rule
+        if qtype == "technical":
+            followup_rule = "ALWAYS ask 1 follow-up; max 2. Never repeat a dimension already answered."
+        elif qtype == "behavioural":
+            followup_rule = "0-1 follow-ups. Only probe if the answer is vague or lacks a concrete example."
+        else:
+            followup_rule = "0-1 follow-ups. Keep it conversational."
+ 
+        lines.append(
+            f"  [{qid}] ({qtype.upper()})\n"
+            f"     Ask: \"{text}\"\n"
+            f"     Follow-up rule: {followup_rule}\n"
+            f"     Follow-up seeds (your private menu — pick the most relevant):\n"
+            f"{seed_lines}\n"
+            f"     Depth gate: {gate_str}\n"
+        )
+ 
+    return "\n".join(lines)
+
+def _core_rules() -> str:
+    return (
+        "## Core rules\n\n"
+        "1. STAY IN ROLE: Only discuss company culture, salary, or team structure if the "
+        "candidate explicitly asks. For social pleasantries ('thanks', 'glad to be here'), "
+        "acknowledge briefly and re-ask the pending question.\n\n"
+        "2. NO GENERIC PRAISE: Never say 'That's great!', 'Impressive!', 'Fantastic!'. "
+        "Instead, reflect back ONE sentence showing you processed the answer "
+        "(e.g. 'So you used schema injection specifically to ground the outputs — got it.').\n\n"
+        "3. CLARIFICATION BEFORE MOVING ON: If you cannot parse a candidate's answer "
+        "(garbled speech, transcription artifacts, apparent gibberish), say: "
+        "'Sorry, I didn't quite catch that — could you say that again?' "
+        "Do this BEFORE evaluating the answer.\n\n"
+        "4. FRAGMENTED SPEECH IS ONE ANSWER: A response split across multiple short "
+        "utterances is still ONE response. Never trigger 'No worries' just because "
+        "speech was hesitant or fragmented. Only trigger it if the candidate explicitly "
+        "says they don't know, or gives two consecutive answers that are clearly off-topic.\n\n"
+    )
+ 
+ 
+def _flow_control(bank: list[dict]) -> str:
+    total = len(bank)
+    technical_count = sum(1 for q in bank if q.get("question_type") == "technical")
+ 
+    return (
+        "## Interview flow control\n\n"
+        f"Total questions to cover: {total} (plus your closing question at the end).\n"
+        f"Technical questions: {technical_count} — each MUST have at least 1 follow-up.\n\n"
+        "### Advancing to the next question\n"
+        "Before moving to the next question, check the depth gate for the current one:\n"
+        "- If requires_concrete_example=true and the candidate has not given one: "
+        "probe once more (use a follow-up seed). Then advance regardless.\n"
+        "- If requires_metric=true and no metric was given: ask once for a number or outcome. "
+        "Then advance regardless.\n"
+        "- Never ask the same dimension (metrics / tools / challenges / team) twice "
+        "within the same question.\n\n"
+        "### Handling silence or struggle\n"
+        "- If the candidate goes silent after being asked twice, say: "
+        "'No worries, let's move on.' and advance.\n"
+        "- Do NOT treat pausing or short answers as struggling.\n\n"
+        "### Closing\n"
+        "- After covering all questions, ask: 'Do you have any questions for us?'\n"
+        "- Once the candidate responds (even with 'no'), the interview is OVER.\n"
+        "- Close with: 'That concludes our interview. "
+        f"Best of luck with the next steps, {'{candidate_name}'}.' "
+        "(substitute the candidate's actual name)\n"
+        "- Never loop back after closing.\n\n"
+    ).replace("{candidate_name}", "the candidate")
 
 
 def save_wav(audio_buffer: bytearray, path: str, sample_rate: int = SAMPLE_RATE) -> None:
@@ -496,6 +617,11 @@ class InterviewSession:
             self._log("[OK] Deepgram WebSocket opened")
             await dg_ws.send(json.dumps(settings))
             self._log("Settings sent to Deepgram")
+            # Proactively mute mic so the greeting isn't picked up
+            try:
+                await websocket.send_text(json.dumps({"ctrl": "agent_speaking"}))
+            except Exception:
+                pass
             self._push_event({"type": "connected"})
 
             # ── Task A: Deepgram → browser (events + TTS audio) ───────────────

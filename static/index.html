@@ -432,18 +432,50 @@
             <!-- Setup -->
             <div class="panel" id="setup-panel">
                 <h2>Interview Setup</h2>
-                <label>Candidate Name</label>
-                <input id="inp-name" value="Alex" />
-                <label>Role</label>
-                <input id="inp-role" value="Software Engineer" />
-                <label>Questions (one per line)</label>
-                <textarea id="inp-q">Can you start by telling me a little about yourself and your background?
+                
+                <div id="setup-tabs" style="display:flex;gap:10px;margin-bottom:15px;border-bottom:1px solid var(--border)">
+                    <button class="btn btn-ghost" style="flex:1;border-bottom:2px solid var(--accent);border-radius:0" onclick="setSetupMode('ai')">🤖 AI Auto</button>
+                    <button class="btn btn-ghost" style="flex:1;border-radius:0" onclick="setSetupMode('manual')">⌨️ Manual</button>
+                </div>
+
+                <div id="setup-ai">
+                    <label>Job Description (PDF)</label>
+                    <input type="file" id="inp-jd-file" accept=".pdf" />
+                    
+                    <label>Candidate Resume (PDF)</label>
+                    <input type="file" id="inp-resume-file" accept=".pdf" />
+                    
+                    <button class="btn btn-ghost" id="btn-evaluate" onclick="evaluateCandidate()">🔍 Evaluate & Generate</button>
+                    
+                    <div id="eval-result" style="display:none;margin-top:15px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                            <span>Fit Score</span>
+                            <strong id="fit-score-val" style="color:var(--accent)">0%</strong>
+                        </div>
+                        <div style="height:6px;background:var(--border);border-radius:99px;overflow:hidden;margin-bottom:12px">
+                            <div id="fit-score-bar" style="height:100%;background:var(--accent);width:0%"></div>
+                        </div>
+                        <div id="eval-details" style="color:var(--muted);line-height:1.4"></div>
+                    </div>
+                </div>
+
+                <div id="setup-manual" style="display:none">
+                    <label>Candidate Name</label>
+                    <input id="inp-name" value="Alex" />
+                    <label>Role</label>
+                    <input id="inp-role" value="Software Engineer" />
+                    <label>Questions (one per line)</label>
+                    <textarea id="inp-q">Can you start by telling me a little about yourself and your background?
 What programming languages or technologies are you most comfortable with, and why?
 Describe a challenging technical problem you solved recently. What was your approach?
 How do you handle working under pressure or tight deadlines?
 Where do you see yourself professionally in the next three to five years?
 Do you have any questions for us about the role or the team?</textarea>
-                <button class="btn btn-primary" id="btn-start" onclick="startInterview()">🚀 Start Interview</button>
+                </div>
+                
+                <div style="margin-top:15px">
+                    <button class="btn btn-primary" id="btn-start" onclick="startInterview()" disabled>🚀 Start Interview</button>
+                </div>
             </div>
 
             <!-- Status -->
@@ -512,6 +544,10 @@ Do you have any questions for us about the role or the team?</textarea>
         // so Deepgram doesn't transcribe the agent's TTS as candidate speech.
         let micMuted = false;
 
+        // AI Pipeline State
+        let currentMode = 'ai'; // 'ai' or 'manual'
+        let aiResult = null;    // { skills, experience, question_bank, candidate_name, role }
+
         // ─── Visualiser ───────────────────────────────────────────────────────────────
         const $viz = document.getElementById('viz');
         for (let i = 0; i < VIZ_N; i++) {
@@ -563,6 +599,26 @@ Do you have any questions for us about the role or the team?</textarea>
         }
         function setIndicator(text) {
             document.getElementById('indicator').textContent = text;
+        }
+
+        function setSetupMode(mode) {
+            currentMode = mode;
+            const aiTab = document.querySelectorAll('#setup-tabs button')[0];
+            const manualTab = document.querySelectorAll('#setup-tabs button')[1];
+            
+            if (mode === 'ai') {
+                document.getElementById('setup-ai').style.display = 'block';
+                document.getElementById('setup-manual').style.display = 'none';
+                aiTab.style.borderBottom = '2px solid var(--accent)';
+                manualTab.style.borderBottom = 'none';
+                document.getElementById('btn-start').disabled = !aiResult;
+            } else {
+                document.getElementById('setup-ai').style.display = 'none';
+                document.getElementById('setup-manual').style.display = 'block';
+                aiTab.style.borderBottom = 'none';
+                manualTab.style.borderBottom = '2px solid var(--accent)';
+                document.getElementById('btn-start').disabled = false;
+            }
         }
 
         // ─── Timer ────────────────────────────────────────────────────────────────────
@@ -758,7 +814,10 @@ registerProcessor('mic-capture', MicCapture);
                 outputBuffer = merged;
 
                 // Only send when mic is NOT muted (i.e. agent is not speaking)
-                if (!micMuted && outputBuffer.length >= MIN_SEND_SAMPLES) {
+                if (micMuted) {
+                    // Clear the buffer so we don't "rush out" old echo when unmuting
+                    outputBuffer = new Int16Array(0);
+                } else if (outputBuffer.length >= MIN_SEND_SAMPLES) {
                     ws.send(outputBuffer.buffer);
                     dbg(`→ WS: ${outputBuffer.byteLength} B`);
                     outputBuffer = new Int16Array(0);
@@ -805,12 +864,12 @@ registerProcessor('mic-capture', MicCapture);
                     return;
                 }
                 if (msg.ctrl === 'agent_done') {
-                    // 300 ms grace so residual speaker audio dies before we
-                    // re-open the mic and Deepgram's VAD could pick it up.
+                    // 1000 ms grace so residual speaker audio (echo) dies down completely
+                    // before we re-open the mic for candidate input.
                     setTimeout(() => {
                         micMuted = false;
                         dbg('🎤 Mic unmuted (agent done)');
-                    }, 300);
+                    }, 1000);
                     return;
                 }
                 dbg(`← ${msg.type}`);
@@ -862,21 +921,127 @@ registerProcessor('mic-capture', MicCapture);
         }
 
         // ─── Actions ──────────────────────────────────────────────────────────────────
+        async function evaluateCandidate() {
+            const jdFile = document.getElementById('inp-jd-file').files[0];
+            const resumeFile = document.getElementById('inp-resume-file').files[0];
+            
+            if (!jdFile || !resumeFile) {
+                toast('Please select both JD and Resume PDFs', true);
+                return;
+            }
+
+            const $btn = document.getElementById('btn-evaluate');
+            $btn.disabled = true; $btn.textContent = '⏳ Analyzing...';
+            document.getElementById('eval-result').style.display = 'none';
+
+            try {
+                // 1. Evaluate Candidate
+                const formData = new FormData();
+                formData.append('jd_file', jdFile);
+                formData.append('resume_file', resumeFile);
+
+                dbg('Starting candidate evaluation...');
+                const evalRes = await fetch('/evaluate-candidate', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!evalRes.ok) throw new Error(await evalRes.text());
+                const screeningData = await evalRes.json();
+                
+                dbg('Evaluation complete. Generating questions...');
+                
+                // 2. Generate Questions based on screening
+                // (Note: we need candidate_name and role; let's extract them from JD/Resume or ask user)
+                // For now, we'll use "Candidate" and "Software Engineer" as defaults
+                // if not already provided.
+                const role = document.getElementById('inp-role').value || "Candidate";
+                const name = document.getElementById('inp-name').value || "Software Engineer";
+
+                const genRes = await fetch('/generate-questions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        role: role,
+                        candidate_name: name,
+                        candidate_skills: screeningData.candidate_skills || [], // Note: main.py needs to return these or we need to fix backend
+                        candidate_experience: screeningData.candidate_experience || [],
+                        jd_skills: screeningData.jd_skills || []
+                    })
+                });
+                
+                // WAIT: Looking at main.py, /evaluate-candidate returns CandidateEvalResponse
+                // which DOES NOT include candidate_skills/experience/jd_skills.
+                // It only includes similarity scores. 
+                // I need to fix the backend to return the extracted structures so the frontend can pass them!
+                
+                // Actually, I just checked main.py and resume_screening.py. 
+                // evaluate_candidate (backend) HAS the data, but CandidateEvalResponse doesn't return it.
+                
+                if (!genRes.ok) throw new Error(await genRes.text());
+                const bankData = await genRes.json();
+
+                // Update UI
+                aiResult = {
+                    ...screeningData,
+                    question_bank: bankData.question_bank,
+                    candidate_name: name,
+                    role: role
+                };
+
+                const score = Math.round(aiResult.fit_score * 100);
+                document.getElementById('fit-score-val').textContent = `${score}%`;
+                document.getElementById('fit-score-bar').style.width = `${score}%`;
+                document.getElementById('eval-details').innerHTML = `
+                    Decision: <strong>${aiResult.decision}</strong><br>
+                    Skill Coverage: ${Math.round(aiResult.skill_coverage * 100)}%<br>
+                    Experience Strength: ${Math.round(aiResult.experience_strength * 100)}%<br>
+                    <i style="font-size:11px">${aiResult.experience_strength_reason}</i>
+                `;
+                document.getElementById('eval-result').style.display = 'block';
+                document.getElementById('btn-start').disabled = false;
+                
+                renderQuestions(bankData.question_bank.map(q => q.text));
+                toast('AI setup complete!');
+
+            } catch (e) {
+                toast('Evaluation failed: ' + e.message, true);
+                dbg('Eval Error: ' + e.message);
+            } finally {
+                $btn.disabled = false; $btn.textContent = '🔍 Evaluate & Generate';
+            }
+        }
+
         async function startInterview() {
-            const name = document.getElementById('inp-name').value.trim() || 'Candidate';
-            const role = document.getElementById('inp-role').value.trim() || 'Software Engineer';
-            const qs = document.getElementById('inp-q').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
-            if (!qs.length) { toast('Add at least one question', true); return; }
+            let name, role, qs, q_bank;
+
+            if (currentMode === 'ai' && aiResult) {
+                name = aiResult.candidate_name;
+                role = aiResult.role;
+                q_bank = aiResult.question_bank;
+                qs = q_bank.map(q => q.text);
+            } else {
+                name = document.getElementById('inp-name').value.trim() || 'Candidate';
+                role = document.getElementById('inp-role').value.trim() || 'Software Engineer';
+                qs = document.getElementById('inp-q').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+                if (!qs.length) { toast('Add at least one question', true); return; }
+            }
 
             const $btn = document.getElementById('btn-start');
             $btn.disabled = true; $btn.textContent = '⏳ Starting…';
 
             try {
                 // 1. Create session
+                const payload = { role, candidate_name: name };
+                if (q_bank) {
+                    payload.question_bank = q_bank;
+                } else {
+                    payload.questions = qs;
+                }
+
                 const res = await fetch('/sessions', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ role, candidate_name: name, questions: qs }),
+                    body: JSON.stringify(payload),
                 });
                 if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
