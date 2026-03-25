@@ -28,7 +28,9 @@ import asyncio
 import base64
 import datetime
 import json
+import logging
 import os
+import traceback
 import uuid
 import wave
 from pathlib import Path
@@ -37,7 +39,10 @@ from typing import Optional
 from fastapi import (
     BackgroundTasks,
     FastAPI,
+    File,
+    Form,
     HTTPException,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -48,16 +53,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent import InterviewSession, build_system_prompt, DEFAULT_CONFIG, SAMPLE_RATE, CHANNELS, SAMPLE_WIDTH
+from resume_screening import evaluate_candidate, DEFAULT_THRESHOLD
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="AI Interview Agent",
-    description="Real-time voice interviewing agent powered by Deepgram",
+    title="Interview Agent API",
+    description="AI Interviewer and Resume Screening Pipeline",
     version="1.0.0",
 )
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +110,27 @@ class SessionStatus(BaseModel):
     created_at: str
 
 # ---------------------------------------------------------------------------
+# Resume Screening schemas
+# ---------------------------------------------------------------------------
+
+class CandidateEvalResponse(BaseModel):
+    candidate_id: Optional[str] = None
+    experience_similarity: float = Field(..., ge=0.0, le=1.0,
+                                         description="Cosine similarity of experience embeddings (0.35 weight)")
+    experience_strength: float = Field(..., ge=0.0, le=1.0,
+                                       description="LLM quality score for experience (0.40 weight)")
+    experience_strength_breakdown: dict = Field(default_factory=dict,
+                                                description="Relevance/depth/impact/complexity sub-scores")
+    experience_strength_reason: str = Field(default="",
+                                            description="Short LLM explanation")
+    skill_coverage: float = Field(..., ge=0.0, le=1.0,
+                                  description="Fraction of JD skills matched in resume (0.25 weight)")
+    fit_score: float = Field(..., ge=0.0, le=1.0,
+                             description="0.35*exp_sim + 0.40*exp_str + 0.25*skill_cov")
+    decision: str = Field(..., description="'interview' if fit_score >= threshold, else 'reject'")
+    threshold: float
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
@@ -120,6 +148,74 @@ def _session_or_404(session_id: str) -> InterviewSession:
 async def root():
     """Serve the browser UI."""
     return FileResponse("static/index.html")
+
+
+# ---------------------------------------------------------------------------
+# Resume Screening endpoint
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/evaluate-candidate",
+    response_model=CandidateEvalResponse,
+    summary="Screen a candidate resume against a job description",
+    tags=["Resume Screening"],
+)
+async def evaluate_candidate_endpoint(
+    jd_file: UploadFile = File(..., description="Job description PDF"),
+    resume_file: UploadFile = File(..., description="Candidate resume PDF"),
+    candidate_id: Optional[str] = Form(default=None, description="Optional candidate identifier"),
+    threshold: float = Form(default=DEFAULT_THRESHOLD, ge=0.0, le=1.0,
+                            description="Minimum fit_score to recommend interview (default 0.5)"),
+):
+    """
+    Evaluate a candidate resume against a job description.
+
+    **Pipeline:**
+    1. Extract text from both PDFs via pdfplumber
+    2. Use `llama3.2:3b` (Ollama) to extract structured JSON {skills, experience}
+       from JD and Resume **concurrently**
+    3. Generate embeddings via `nomic-embed-text` (Ollama)
+    4. Cosine similarity: skill_sim + experience_sim
+    5. fit_score = 0.2 * skill_sim + 0.8 * exp_sim
+
+    **Requirements:**
+    - Ollama must be running locally with `llama3.2:3b` and `nomic-embed-text` pulled
+    """
+    # Validate MIME types
+    for f, label in [(jd_file, "jd_file"), (resume_file, "resume_file")]:
+        if f.content_type not in ("application/pdf", "application/octet-stream"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{label} must be a PDF (got {f.content_type})",
+            )
+
+    jd_bytes = await jd_file.read()
+    resume_bytes = await resume_file.read()
+
+    try:
+        result = await evaluate_candidate(
+            jd_bytes=jd_bytes,
+            resume_bytes=resume_bytes,
+            threshold=threshold,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        traceback.print_exc()
+        logger.error(f"Pipeline failure: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}")
+
+    return CandidateEvalResponse(
+        candidate_id=candidate_id,
+        experience_similarity=result["experience_similarity"],
+        experience_strength=result["experience_strength"],
+        experience_strength_breakdown=result.get("experience_strength_breakdown", {}),
+        experience_strength_reason=result.get("experience_strength_reason", ""),
+        skill_coverage=result["skill_coverage"],
+        fit_score=result["fit_score"],
+        decision=result["decision"],
+        threshold=threshold,
+    )
 
 
 @app.post(
