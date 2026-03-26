@@ -10,34 +10,34 @@ The system architecture is broken down into two main phases: **Asynchronous Prep
 
 ```mermaid
 graph TD
-    subgraph Client [Frontend UI]
+    subgraph Client ["Frontend UI"]
         A[Browser Mic/Speaker]
     end
 
-    subgraph Preparation [Pipeline (Ollama)]
+    subgraph Preparation ["Preparation Pipeline (Ollama)"]
         C[Resume Screening] -->|JSON Extraction| D[Question Generator]
         D -->|Unique Project Rule| E[(Structured Question Bank)]
+        C -.->|Evaluates against JD| D
     end
 
-    subgraph Execution [FastAPI Server]
+    subgraph Execution ["FastAPI Server"]
         B[main.py WebSocket Endpoint]
         F[agent.py - Deepgram Bridge]
         G[interview_state.py - Tracker]
     end
 
-    subgraph VoiceAPI [Deepgram]
+    subgraph VoiceAPI ["Deepgram"]
         H[STT / LLM / TTS Pipeline]
     end
 
-    %% Preparation Flow
-    C -.->|Evaluates against JD| D
-    
-    %% Live Flow
-    A <-->|Raw Audio| B
-    B <-->|ws bytes| F
-    F <-->|_handle_dg_event| G
+    A -->|Raw Audio| B
+    B -->|Raw Audio| A
+    B -->|ws bytes| F
+    F -->|ws bytes| B
+    F -->|_handle_dg_event| G
     G -.->|State-Auth UpdateThink| F
-    F <-->|WS Text/Audio| H
+    F -->|WS Text/Audio| H
+    H -->|WS Text/Audio| F
 ```
 
 ### 1. Preparation Pipeline (`resume_screening.py` & `question_generator.py`)
