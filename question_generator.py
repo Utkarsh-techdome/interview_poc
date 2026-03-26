@@ -66,14 +66,29 @@ def _parse_bank(raw: str) -> list[dict[str, Any]]:
 
     questions = data.get("questions", [])
     validated = []
+    seen_texts = set()
+
     for i, q in enumerate(questions):
         if not isinstance(q, dict):
             continue
+            
+        q_text = str(q.get("text", "")).strip()
+        if not q_text:
+            continue
+            
+        # Deduplication check: normalise and check if we've seen a very similar question
+        # (Llama 3.2 3B sometimes copy-pastes JSON objects to pad the array)
+        norm_text = re.sub(r'[^a-z0-9]', '', q_text.lower())
+        if norm_text in seen_texts:
+            logger.warning(f"Generator duplicate question stripped: {q_text[:30]}")
+            continue
+        seen_texts.add(norm_text)
+
         # Normalise required fields with safe defaults
         validated.append({
-            "id": q.get("id", f"q{i+1}"),
+            "id": f"q{len(validated)+1}",
             "question_type": q.get("question_type", "behavioural"),
-            "text": str(q.get("text", "")).strip(),
+            "text": q_text,
             "anchor": str(q.get("anchor", "")).strip(),
             "follow_up_seeds": [
                 str(s) for s in q.get("follow_up_seeds", []) if s

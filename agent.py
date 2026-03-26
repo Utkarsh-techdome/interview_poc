@@ -71,6 +71,10 @@ class InterviewSession:
         self._log_path = self._data_dir / "interview_log.txt"
         self._log_path.write_text("", encoding="utf-8")
 
+        # Initialize interview state tracker
+        self.state_tracker = InterviewStateTracker(self.cfg.get('question_bank', []))
+        self.base_prompt = ""
+
     def _log(self, text: str) -> None:
         ts   = datetime.datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}] {text}"
@@ -91,6 +95,59 @@ class InterviewSession:
         asyncio.run_coroutine_threadsafe(
             self._ws.send_bytes(data), self._loop
         )
+
+    async def _send_update_instructions(self, dg_ws, snapshot: dict) -> None:
+        """Serialise state snapshot into terse prompt injection."""
+        action = snapshot['next_action'].upper()
+        target = snapshot['current_question_id'] or "none"
+        quality = snapshot['signal_quality']
+        
+        # Build terse string
+        lines = [
+            "## CURRENT STATE (DO NOT IGNORE)",
+            f"- ACTION: {action}",
+            f"- QUESTION_ID: {target}",
+            f"- QUESTION_TEXT: {snapshot.get('current_question_text') or 'none'}",
+            f"- QUESTION_ANCHOR: {snapshot.get('current_question_anchor') or 'none'}",
+            f"- SIGNAL: {quality}",
+            f"- DONE_TOPICS: {', '.join(snapshot['topics_done']) or 'none'}",
+            f"- REMAINING_TOPICS: {', '.join(snapshot['topics_remaining']) or 'none'}"
+        ]
+        if snapshot['suggested_probe']:
+            lines.append(f"- PROBE_SUGGESTION: {snapshot['suggested_probe']}")
+        
+        if action == "ADVANCE":
+            if not snapshot['topics_done']:
+                lines.append(f"- INSTRUCTION: Start of interview. Introduce the context and ASK the first question: {target}")
+            else:
+                lines.append(f"- INSTRUCTION: Current topic satisfied. REFLECT back 1-2 specific details from their last answer to show you listened, then pivot and ASK the next question: {target}")
+        elif action == "PROBE":
+            lines.append("- INSTRUCTION: Depth gate not yet met. Acknowledge what they said, then ask a detailed follow-up to dig deeper.")
+        elif action == "CLARIFY":
+            lines.append("- INSTRUCTION: Response was garbled. Ask candidate to repeat politely.")
+        elif action == "CLOSE":
+            lines.append("- INSTRUCTION: Interview complete or candidate unwell. Move to closing sequence with empathy.")
+
+        instructions = "\n".join(lines)
+        
+        # New prompt = Base + Current State
+        new_prompt = f"{self.base_prompt}\n\n{instructions}"
+        
+        msg = {
+            "type": "UpdateThink",
+            "think": {
+                "provider": {
+                    "type": "open_ai",
+                    "model": "gpt-4o-mini"
+                },
+                "prompt": new_prompt
+            }
+        }
+        try:
+            await dg_ws.send(json.dumps(msg))
+            self._log(f"[state] Sent UpdateThink: {action} on {target}")
+        except Exception as e:
+            self._log(f"Failed to send UpdateThink: {e}")
 
     def _finish(self):
         if self.status == "ended":
@@ -148,6 +205,8 @@ class InterviewSession:
             role=self.cfg.get('role', 'Software Engineer')
         )
 
+        self.base_prompt = build_system_prompt(self.cfg)
+        
         settings = {
             "type": "Settings",
             "audio": {
@@ -157,7 +216,7 @@ class InterviewSession:
             "agent": {
                 "think": {
                     "provider": {"type": "open_ai", "model": "gpt-4o-mini"},
-                    "prompt": build_system_prompt(self.cfg),
+                    "prompt": self.base_prompt,
                 },
                 "speak": {"provider": {"type": "deepgram", "model": "aura-2-thalia-en"}},
                 "greeting": greeting,
@@ -202,7 +261,7 @@ class InterviewSession:
                                     try: await websocket.send_text(json.dumps({"ctrl": "agent_done"}))
                                     except Exception: pass
                                 
-                                await self._handle_dg_event(evt_type, msg)
+                                await self._handle_dg_event(evt_type, msg, dg_ws)
                     except Exception as e:
                         self._log(f"DG->Browser task error: {e}")
 
@@ -222,7 +281,16 @@ class InterviewSession:
                     except Exception as e:
                         self._log(f"Browser->DG task error: {e}")
 
-                await asyncio.gather(_dg_to_browser(), _browser_to_dg())
+                # Task C: Keep-alive
+                async def _keep_alive():
+                    try:
+                        while not self._stop_event.is_set():
+                            await asyncio.sleep(3)
+                            await dg_ws.send(json.dumps({"type": "KeepAlive"}))
+                    except Exception as e:
+                        self._log(f"KeepAlive task error: {e}")
+
+                await asyncio.gather(_dg_to_browser(), _browser_to_dg(), _keep_alive())
 
         except Exception as e:
             self._log(f"Session failed: {e}")
@@ -230,7 +298,7 @@ class InterviewSession:
         finally:
             self._finish()
 
-    async def _handle_dg_event(self, evt_type: str, evt: dict) -> None:
+    async def _handle_dg_event(self, evt_type: str, evt: dict, dg_ws) -> None:
         if evt_type == "Welcome":
             self._push_event({"type": "welcome"})
         elif evt_type == "SettingsApplied":
@@ -247,6 +315,15 @@ class InterviewSession:
             label = "agent" if role == "assistant" else "user"
             self.conversation.append({"role": label, "text": text, "ts": datetime.datetime.now().isoformat()})
             self._push_event({"type": "conversation_text", "role": label, "text": text})
+
+            # --- DYNAMIC STATE LOGIC ---
+            if label == "user":
+                snapshot = self.state_tracker.process_candidate_turn(text)
+                await self._send_update_instructions(dg_ws, snapshot)
+            else:
+                # Agent spoke — mark follow-up if we're in a probe state
+                self.state_tracker.mark_agent_asked_followup()
+
             if label == "agent" and any(p in text.lower() for p in FAREWELL_PHRASES):
                 threading.Timer(4.0, self._finish).start()
         elif evt_type in ("Error", "Warning"):

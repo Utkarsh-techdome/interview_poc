@@ -46,12 +46,11 @@ _METRIC_SIGNALS = [
     r"\b(latency|throughput|uptime|accuracy|precision|recall|f1|error rate|response time)\b",
 ]
 
-# Phrases that indicate the candidate is struggling / deflecting / unwell
+# Phrases that indicate the candidate is struggling / deflecting
 _STRUGGLE_SIGNALS = [
     r"\b(i don'?t know|not sure|no idea|can'?t think of|haven'?t|never (done|used|worked))\b",
     r"\b(i'?m not (sure|familiar|experienced)|outside my (experience|expertise))\b",
     r"\b(pass|skip|next question|move on)\b",
-    r"\b(unwell|sick|not feeling (well|good)|headache|dizzy|nauseous|medical|pain)\b",
 ]
 
 # Phrases that indicate a clarification request is needed (ASR noise patterns)
@@ -87,7 +86,6 @@ class TopicState:
     question_id: str
     question_type: str                    # "technical" | "behavioural" | "motivational"
     question_text: str
-    anchor: str
     follow_up_seeds: list[str]
     requires_concrete_example: bool
     requires_metric: bool
@@ -109,7 +107,12 @@ class TopicState:
         """True when depth gate conditions are met — safe to advance."""
         example_ok = (not self.requires_concrete_example) or self.got_concrete_example
         metric_ok = (not self.requires_metric) or self.got_metric
-        return example_ok and metric_ok
+        min_followup_ok = (
+            self.follow_up_count >= 1
+            if self.question_type == "technical"
+            else True
+        )
+        return example_ok and metric_ok and min_followup_ok
 
     @property
     def exhausted(self) -> bool:
@@ -245,7 +248,6 @@ class InterviewStateTracker:
             question_id=q["id"],
             question_type=q.get("question_type", "behavioural"),
             question_text=q.get("text", ""),
-            anchor=q.get("anchor", ""),
             follow_up_seeds=q.get("follow_up_seeds", []),
             requires_concrete_example=gate.get("requires_concrete_example", False),
             requires_metric=gate.get("requires_metric", False),
@@ -270,21 +272,14 @@ class InterviewStateTracker:
         topic.update_signal_quality()
 
     def _decide_action(self, text: str, topic: TopicState) -> str:
-        is_last = (self._index + 1) >= len(self.question_bank)
-
-        # 0. Candidate is unwell or explicitly asked to stop/conclude
-        if _matches_any(text, [r"\b(unwell|sick|not feeling well|conclude|stop|end this)\b"]):
-            logger.debug(f"[state] health/exit signal detected — closing")
-            return "close"
-
-        # 1. Candidate explicitly struggling twice → move on
+        # Candidate explicitly struggling twice → move on
         if topic.struggle_count >= 2:
-            logger.debug(f"[state] struggle threshold hit")
-            return "close" if is_last else "advance"
+            logger.debug(f"[state] struggle threshold hit — advancing")
+            return "advance"
 
         # Hit the follow-up ceiling
         if topic.exhausted:
-            return "close" if is_last else "advance"
+            return "advance"
 
         # Depth gate not satisfied and still have follow-up budget
         if not topic.depth_satisfied and not topic.exhausted:
@@ -292,7 +287,11 @@ class InterviewStateTracker:
 
         # Depth satisfied — advance
         if topic.depth_satisfied:
-            return "close" if is_last else "advance"
+            # Check if there are more topics
+            next_index = self._index + 1
+            if next_index >= len(self.question_bank):
+                return "close"
+            return "advance"
 
         return "probe"   # safe default
 
@@ -344,8 +343,6 @@ class InterviewStateTracker:
         return {
             "next_action": next_action,
             "current_question_id": topic.question_id if topic else None,
-            "current_question_text": topic.question_text if topic else None,
-            "current_question_anchor": topic.anchor if topic else None,
             "current_question_type": topic.question_type if topic else None,
             "follow_up_count": topic.follow_up_count if topic else 0,
             "got_concrete_example": topic.got_concrete_example if topic else False,
